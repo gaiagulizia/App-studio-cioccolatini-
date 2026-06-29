@@ -9,6 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -29,14 +30,8 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build Web Assets
-        run: npm run build --if-present
-
       - name: Add Android platform
-        run: |
-          if [ ! -d "android" ]; then
-            npx cap add android
-          fi
+        run: npx cap add android
         env:
           CI: true
 
