@@ -32,11 +32,10 @@ jobs:
       - name: Build Web Assets
         run: npm run build --if-present
 
-      - name: Add Android platform
+      - name: Add Android platform (Fresh Install)
         run: |
-          if [ ! -d "android" ]; then
-            npx cap add android
-          fi
+          rm -rf android
+          npx cap add android
         env:
           CI: true
 
