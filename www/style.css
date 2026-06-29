@@ -7,7 +7,7 @@
 }
 
 /* ================================================
-   BASE — desktop (> 768px): layout fisso a schermo
+   BASE — desktop e tablet (> 768px)
    ================================================ */
 
 html, body { height: 100%; }
@@ -202,8 +202,11 @@ h1 {
 }
 .counter span { font-family: "Cherry Bomb One", system-ui; }
 
-/* Contatore mobile: visibile solo su mobile (tra gif e scatola) */
+/* Contatori: desktop visibile, mobile nascosto */
 .counter--mobile { display: none; }
+
+/* Gif mobile: nascosta su desktop */
+.mobile-side { display: none; }
 
 /* Pulsanti aggiungi/rimuovi */
 .controls { flex-shrink: 0; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
@@ -228,6 +231,7 @@ h1 {
     justify-content: center;
 }
 
+/* Su desktop/tablet la gif è assoluta a sinistra */
 .study-gif {
     position: absolute;
     left: 0;
@@ -238,14 +242,6 @@ h1 {
     user-select: none;
     pointer-events: none;
     z-index: 2;
-}
-
-/* Visibile solo su mobile (viene mostrata tra top-panel e box-wrapper) */
-.study-gif-mobile {
-    display: none;
-    width: clamp(70px, 20vw, 130px);
-    user-select: none;
-    pointer-events: none;
 }
 
 .current-box-area {
@@ -259,7 +255,7 @@ h1 {
 
 .box {
     position: relative;
-    aspect-ratio: 2.11 / 1;          /* altezza automatica per le scatole completate */
+    aspect-ratio: 2.11 / 1;
     background-image: url('https://i.ibb.co/CpzX2yvQ/IMG-3742.png');
     background-size: contain;
     background-repeat: no-repeat;
@@ -514,9 +510,57 @@ h1 {
 .edit-empty { text-align: center; color: var(--brown); font-size: 13px; padding: 20px; opacity: 0.7; }
 
 /* ================================================
+   TABLET — stesso layout desktop con elementi più piccoli
+   ================================================ */
+
+@media (max-width: 1024px) and (min-width: 769px) {
+    .app-container {
+        padding: 14px 20px;
+        gap: 10px;
+    }
+
+    .left-panel, .right-panel {
+        padding: 14px 16px;
+        border-radius: 24px;
+    }
+
+    .top-panel { gap: 16px; }
+
+    .stopwatch-box, .timer-box {
+        padding: 8px 12px;
+        min-width: 90px;
+    }
+
+    .stopwatch-time, .timer-display { font-size: 20px; }
+
+    .keypad {
+        grid-template-columns: repeat(3, 32px);
+        gap: 5px;
+        padding: 6px;
+    }
+    .key { height: 26px; font-size: 12px; }
+
+    .counter { font-size: 13px; padding: 6px 14px; min-width: 110px; }
+
+    .stats-box { padding: 10px 24px; }
+    .stats-value { font-size: 24px; }
+
+    .completed { width: calc(50% - 8px); max-width: 200px; }
+
+     /* Su tablet la gif è più piccola e posizionata correttamente */
+    .study-gif {
+        height: min(70%, 160px);
+        left: 10px;
+    }
+
+    /* Aggiungi padding a sinistra per evitare sovrapposizione */
+    .current-box-area {
+        padding-left: calc(min(70%, 160px) + 20px);
+    }
+}
+
+/* ================================================
    MOBILE — layout scorrevole (≤ 768px)
-   Su mobile il JS NON ridimensiona il box:
-   usa CSS aspect-ratio.
    ================================================ */
 
 @media (max-width: 768px) {
@@ -538,7 +582,7 @@ h1 {
 
     .stats-open-btn { font-size: 11px; padding: 6px 12px; }
 
-    /* Colonne impilate */
+    /* Box destro SOTTO il box sinistro */
     .main-content { flex-direction: column; gap: 14px; }
 
     .left-panel, .right-panel {
@@ -560,21 +604,32 @@ h1 {
         gap: 0;
     }
 
-    /* La gif originale (desktop) è nascosta su mobile */
+    /* La gif desktop è nascosta su mobile */
     .study-gif { display: none; }
 
-    /* La gif mobile appare tra top-panel e counter mobile */
-    .study-gif-mobile {
-        display: block;
-        margin: 6px auto 2px;
+    /* Gif mobile e counter: visibili, posizionati via CSS */
+    .mobile-side {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
     }
 
-    /* Scambia i counter: nasconde desktop, mostra mobile */
+    .study-gif-mobile {
+        display: block;
+        width: clamp(60px, 18vw, 110px);
+        user-select: none;
+        pointer-events: none;
+    }
+
     .counter--desktop { display: none; }
     .counter--mobile  {
         display: block;
-        margin: 4px 0 6px;
+        margin: 0;
         text-align: center;
+        font-size: 13px;
+        padding: 6px 14px;
+        min-width: 0;
     }
 
     .current-box-area {
@@ -603,12 +658,19 @@ h1 {
     .completed-section::-webkit-scrollbar-track { background: var(--lightPink); border-radius: 6px; }
     .completed-section::-webkit-scrollbar-thumb { background: var(--brown); border-radius: 6px; }
 
-    /* Esattamente 2 scatole per riga; il width è gestito dal grid */
-    .completed { width: 100%; max-width: none; }
+   /* SCATOLE COMPLETATE: dimensione proporzionale alla scatola principale */
     .completed-boxes {
         display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 10px;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+        width: 100%;
+        margin: 0 auto;
+        justify-items: center;
+    }
+    .completed {
+        width: 100%;
+        max-width: calc(min(90vw, 480px) / 2 - 12px);
+        aspect-ratio: 2.11 / 1;
     }
 
     /* Solo scroll verticale nel pannello destra */
@@ -636,6 +698,20 @@ h1 {
     .stat-total-value { font-size: 26px; }
     .period-label { min-width: 140px; font-size: 12px; }
     .period-tab   { padding: 7px 14px; }
+
+    /* MOBILE: gif e contatore a destra del tastierino */
+    .right-column {
+        flex-direction: row;
+        flex-wrap: wrap;
+        justify-content: center;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+    }
+
+    .mobile-side { order: 1; }
+    .keypad      { order: 0; }
+    .counter--desktop { display: none; }
 }
 
 /* ================================================
@@ -652,6 +728,8 @@ h1 {
         flex-direction: row;
         flex-wrap: wrap;
         justify-content: center;
+        align-items: center;
+        gap: 8px;
         width: 100%;
     }
 
@@ -667,6 +745,10 @@ h1 {
     .edit-table th, .edit-table td { font-size: 11px; padding: 6px 6px; }
     .edit-input    { width: 60px; font-size: 11px; }
     .save-row-btn  { font-size: 10px; padding: 3px 8px; }
+
+    /* Smartphone piccolo: gif e contatore sopra il tastierino */
+    .mobile-side { order: 0; }
+    .keypad      { order: 1; }
 }
 
 /* Disabilita hover stuck su touch */
