@@ -1,7 +1,5 @@
 name: Build APK
 
-# Si avvia automaticamente ogni volta che carichi/modifichi un file,
-# oppure manualmente dal tab "Actions" su GitHub.
 on:
   push:
     branches: [ main ]
@@ -10,41 +8,38 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-
-      # 1. Scarica i file del repository
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      # 2. Java 17 (richiesto da Capacitor 6)
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@3a474e3efd14c47e6d222f0119b35222def9f857 # v4.0.0
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      # 3. Node.js
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@39228d37a702b8f413a8ece673b0e28063c71330 # v4.1.0
         with:
           node-version: '20'
 
-      # 4. Android SDK (build tools, platform tools)
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@7c172bab5da3160a73693444907a13bd519fa62a # v3.2.1
 
-      # 5. Installa Capacitor CLI e dipendenze
       - name: Install dependencies
         run: npm install
 
-      # 6. Genera il progetto Android
+      - name: Build Web Assets
+        run: npm run build --if-present
+
       - name: Add Android platform
-        run: npx cap add android
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
         env:
           CI: true
 
-      # 7. Copia i file Java nativi (TimerService, TimerPlugin, MainActivity)
       - name: Copy native Java files
         run: |
           DEST="android/app/src/main/java/com/produttivita/app"
@@ -52,29 +47,23 @@ jobs:
           cp android-src/TimerService.java "$DEST/"
           cp android-src/TimerPlugin.java  "$DEST/"
           cp android-src/MainActivity.java "$DEST/"
-          echo "File Java copiati in $DEST"
-          ls "$DEST"
 
-      # 8. Aggiunge permessi e servizio all'AndroidManifest.xml
       - name: Patch AndroidManifest.xml
         run: python3 patch-manifest.py
 
-      # 9. Sincronizza i file web (www/) nell'app Android
       - name: Sync Capacitor
         run: npx cap sync android
 
-      # 10. Compila l'APK in modalità debug
       - name: Build Debug APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew assembleDebug --no-daemon
         env:
           GRADLE_OPTS: "-Dorg.gradle.daemon=false -Xmx2g"
 
-      # 11. Rende l'APK scaricabile come artefatto (disponibile per 30 giorni)
       - name: Upload APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7834576b402471 # v4.5.0
         with:
           name: Produttivita-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
