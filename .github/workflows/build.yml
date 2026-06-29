@@ -10,21 +10,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@v4
 
       - name: Setup Java
-        uses: actions/setup-java@3a474e3efd14c47e6d222f0119b35222def9f857 # v4.0.0
+        uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
       - name: Setup Node.js
-        uses: actions/setup-node@39228d37a702b8f413a8ece673b0e28063c71330 # v4.1.0
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@7c172bab5da3160a73693444907a13bd519fa62a # v3.2.1
+        uses: android-actions/setup-android@v3
 
       - name: Install dependencies
         run: npm install
@@ -63,7 +63,7 @@ jobs:
           GRADLE_OPTS: "-Dorg.gradle.daemon=false -Xmx2g"
 
       - name: Upload APK
-        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7834576b402471 # v4.5.0
+        uses: actions/upload-artifact@v4
         with:
           name: Produttivita-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
