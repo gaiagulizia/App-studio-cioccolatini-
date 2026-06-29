@@ -1,4 +1,158 @@
 /* =============================================
+   RILEVAMENTO AMBIENTE
+   ============================================= */
+
+/** true quando gira dentro l'APK Capacitor */
+const IS_NATIVE = typeof window.Capacitor !== 'undefined'
+               && window.Capacitor.isNativePlatform?.() === true;
+
+/** Plugin nativo per il timer in background (solo APK) */
+const TimerNative = IS_NATIVE ? window.Capacitor.Plugins.TimerNative : null;
+
+/* =============================================
+   WEB WORKER — timing background (browser / WebView)
+   ============================================= */
+
+let worker = null;
+
+function initWorker() {
+    if (worker) return;
+    try {
+        worker = new Worker('timer-worker.js');
+        worker.onmessage = onWorkerMsg;
+    } catch (e) {
+        console.warn('Web Worker non disponibile, fallback setInterval');
+    }
+}
+
+function workerSend(cmd, value) {
+    if (worker) {
+        worker.postMessage({ cmd, value });
+    } else {
+        fallbackCmd(cmd, value);   // fallback main-thread
+    }
+}
+
+function onWorkerMsg(e) {
+    const { type, seconds } = e.data;
+    if (type === 'sw-tick') {
+        stopwatchSeconds = seconds;
+        totalStudySeconds++;
+        recordTodaySeconds(1);
+        updateStopwatch();
+        updateTotalTime();
+        updateSpeed();
+    } else if (type === 'timer-tick') {
+        timerSeconds = seconds;
+        totalStudySeconds++;
+        recordTodaySeconds(1);
+        updateTimer();
+        updateTotalTime();
+        updateSpeed();
+    } else if (type === 'timer-done') {
+        timerRunning = false;
+        alert('Tempo finito! 🎉');
+    }
+}
+
+/* =============================================
+   WAKE LOCK — mantiene la CPU attiva (schermo spento)
+   ============================================= */
+
+let wakeLock = null;
+
+async function acquireWakeLock() {
+    if (!('wakeLock' in navigator)) return;
+    try {
+        wakeLock = await navigator.wakeLock.request('screen');
+    } catch (_) { /* dispositivo non supporta o schermo già spento */ }
+}
+
+function releaseWakeLock() {
+    if (wakeLock) { wakeLock.release(); wakeLock = null; }
+}
+
+/* Riacquista il WakeLock quando la pagina torna visibile */
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && (stopwatchRunning || timerRunning)) {
+        acquireWakeLock();
+        /* Sincronizza il Worker con lo stato corrente */
+        if (stopwatchRunning) workerSend('sw-sync', stopwatchSeconds);
+        if (timerRunning)     workerSend('timer-sync', timerSeconds);
+    }
+});
+
+/* =============================================
+   NATIVE CAPACITOR — timer con servizio in foreground
+   ============================================= */
+
+function setupNativeListener() {
+    if (!TimerNative) return;
+    TimerNative.addListener('timerUpdate', ({ type, seconds }) => {
+        if (type === 'sw-tick') {
+            stopwatchSeconds = seconds;
+            totalStudySeconds++;
+            recordTodaySeconds(1);
+            updateStopwatch();
+            updateTotalTime();
+            updateSpeed();
+        } else if (type === 'timer-tick') {
+            timerSeconds = seconds;
+            totalStudySeconds++;
+            recordTodaySeconds(1);
+            updateTimer();
+            updateTotalTime();
+            updateSpeed();
+        } else if (type === 'timer-done') {
+            timerRunning = false;
+            alert('Tempo finito! 🎉');
+        }
+    });
+}
+
+/* =============================================
+   FALLBACK MAIN-THREAD (se Worker non disponibile)
+   ============================================= */
+
+let _swFallback    = null;
+let _timerFallback = null;
+
+function fallbackCmd(cmd, value) {
+    if (cmd === 'sw-start') {
+        if (_swFallback) return;
+        _swFallback = setInterval(() => {
+            stopwatchSeconds++;
+            totalStudySeconds++;
+            recordTodaySeconds(1);
+            updateStopwatch(); updateTotalTime(); updateSpeed();
+        }, 1000);
+    } else if (cmd === 'sw-stop') {
+        clearInterval(_swFallback); _swFallback = null;
+    } else if (cmd === 'sw-reset') {
+        clearInterval(_swFallback); _swFallback = null;
+        stopwatchSeconds = 0; updateStopwatch();
+    } else if (cmd === 'timer-start') {
+        if (_timerFallback) return;
+        _timerFallback = setInterval(() => {
+            timerSeconds--;
+            totalStudySeconds++;
+            recordTodaySeconds(1);
+            updateTimer(); updateTotalTime(); updateSpeed();
+            if (timerSeconds <= 0) {
+                clearInterval(_timerFallback); _timerFallback = null;
+                timerRunning = false;
+                alert('Tempo finito! 🎉');
+            }
+        }, 1000);
+    } else if (cmd === 'timer-stop') {
+        clearInterval(_timerFallback); _timerFallback = null;
+    } else if (cmd === 'timer-reset') {
+        clearInterval(_timerFallback); _timerFallback = null;
+        timerSeconds = value; updateTimer();
+    }
+}
+
+/* =============================================
    DATI / COSTANTI
    ============================================= */
 
@@ -12,10 +166,10 @@ const chocolates = [
 const lidImage = 'https://i.ibb.co/PGZv7Nnw/IMG-3743.png';
 const MAX = 10;
 
-let total        = Number(localStorage.getItem("total")) || 0;
-let boxes        = [];
-let manualInput  = "";
-let lastAddedIndex    = -1;
+let total               = Number(localStorage.getItem("total")) || 0;
+let boxes               = [];
+let manualInput         = "";
+let lastAddedIndex      = -1;
 let animateNewCompleted = false;
 let animateNewEmpty     = false;
 
@@ -24,36 +178,31 @@ const counterMobileEl  = document.getElementById("counter-mobile");
 const mainBoxEl        = document.getElementById("mainBox");
 const completedBoxesEl = document.getElementById("completedBoxes");
 
-/* Aggiorna entrambi i display del contatore (desktop + mobile) */
 function setCounterDisplay(val) {
-    counterEl.innerText = val;
-    if (counterMobileEl) counterMobileEl.innerText = val;
+    if (counterEl)        counterEl.innerText        = val;
+    if (counterMobileEl)  counterMobileEl.innerText  = val;
 }
 
 /* =============================================
    TRACCIAMENTO DATI GIORNALIERI
    ============================================= */
 
-function getTodayKey() {
-    return new Date().toISOString().slice(0, 10);
-}
+function getTodayKey() { return new Date().toISOString().slice(0, 10); }
+
 function getAllDailyData() {
     try { return JSON.parse(localStorage.getItem("dailyData") || "{}"); }
     catch { return {}; }
 }
-function saveDailyData(data) {
-    localStorage.setItem("dailyData", JSON.stringify(data));
-}
+function saveDailyData(data) { localStorage.setItem("dailyData", JSON.stringify(data)); }
+
 function recordTodayPages(delta) {
-    const data = getAllDailyData();
-    const key  = getTodayKey();
+    const data = getAllDailyData(), key = getTodayKey();
     if (!data[key]) data[key] = { pages: 0, seconds: 0 };
     data[key].pages = Math.max(0, (data[key].pages || 0) + delta);
     saveDailyData(data);
 }
 function recordTodaySeconds(delta) {
-    const data = getAllDailyData();
-    const key  = getTodayKey();
+    const data = getAllDailyData(), key = getTodayKey();
     if (!data[key]) data[key] = { pages: 0, seconds: 0 };
     data[key].seconds = (data[key].seconds || 0) + delta;
     saveDailyData(data);
@@ -98,9 +247,8 @@ function buildMain() {
                     : mainBoxEl.classList.remove("new-empty-box");
     current.length >= MAX ? mainBoxEl.classList.add("full")
                           : mainBoxEl.classList.remove("full");
-    for (let i = 0; i < MAX; i++) {
+    for (let i = 0; i < MAX; i++)
         mainBoxEl.appendChild(createSlot(current[i], i, i === lastAddedIndex));
-    }
     const overlay = document.createElement("div");
     overlay.className = "closed-overlay";
     overlay.innerHTML = `<img src="${lidImage}" class="lid">`;
@@ -119,8 +267,10 @@ function buildArchive() {
     for (let i = 0; i < boxes.length - 1; i++) {
         const box = document.createElement("div");
         box.className = "box completed full";
-        if (animateNewCompleted && i === boxes.length - 2) box.classList.add("new-completed-box");
-        for (let j = 0; j < MAX; j++) box.appendChild(createSlot(boxes[i][j], j, false));
+        if (animateNewCompleted && i === boxes.length - 2)
+            box.classList.add("new-completed-box");
+        for (let j = 0; j < MAX; j++)
+            box.appendChild(createSlot(boxes[i][j], j, false));
         const overlay = document.createElement("div");
         overlay.className = "closed-overlay";
         overlay.style.display = "flex";
@@ -138,53 +288,23 @@ function updateSpeed() {
     el.innerText = (total / (totalStudySeconds / 3600)).toFixed(1) + " pag/h";
 }
 
-/* Ridimensiona il box mantenendo il rapporto 2.11:1.
-   Su mobile (≤768px) usa CSS (aspect-ratio), non il JS.
-   Su tablet (769px–1024px) riduce la gif per evitare sovrapposizioni. */
 function fitMainBox() {
-    const w = window.innerWidth;
-
-    // Mobile: lascia fare al CSS
-    if (w <= 768) {
-        mainBoxEl.style.width  = "";
-        mainBoxEl.style.height = "";
-        return;
+    if (window.innerWidth <= 768) {
+        mainBoxEl.style.width = ""; mainBoxEl.style.height = ""; return;
     }
-
     const area = document.querySelector(".current-box-area");
     if (!area || !mainBoxEl) return;
-
-    const ratio  = 2.11;
-    let availW = area.clientWidth;
-    let availH = area.clientHeight;
-
-    // Su tablet, sottrae lo spazio occupato dalla gif per evitare sovrapposizioni
-    if (w <= 1024) {
-        const gif = document.querySelector(".study-gif");
-        if (gif) {
-            const gifW = gif.offsetWidth || 140;
-            availW = Math.max(availW - gifW - 20, availW * 0.55);
-        }
-    }
-
-    if (availW <= 0 || availH <= 0) {
-        requestAnimationFrame(fitMainBox);
-        return;
-    }
-    let boxW, boxH;
-    if (availW / availH > ratio) { boxH = availH; boxW = boxH * ratio; }
-    else                          { boxW = availW; boxH = boxW / ratio; }
-    mainBoxEl.style.width  = boxW + "px";
-    mainBoxEl.style.height = boxH + "px";
+    const ratio = 2.11, availW = area.clientWidth, availH = area.clientHeight;
+    if (availW <= 0 || availH <= 0) { requestAnimationFrame(fitMainBox); return; }
+    let w, h;
+    if (availW / availH > ratio) { h = availH; w = h * ratio; }
+    else                          { w = availW; h = w / ratio; }
+    mainBoxEl.style.width = w + "px"; mainBoxEl.style.height = h + "px";
 }
 
 function render() {
     setCounterDisplay(manualInput || total);
-    buildMain();
-    buildArchive();
-    updateSpeed();
-    save();
-    fitMainBox();
+    buildMain(); buildArchive(); updateSpeed(); save(); fitMainBox();
 }
 
 window.addEventListener("resize", fitMainBox);
@@ -197,8 +317,8 @@ window.addEventListener("load",   fitMainBox);
 function confettiBurst() {
     const end = Date.now() + 1500;
     (function frame() {
-        confetti({ particleCount: 3, angle:  60, spread: 65, origin: { x: 0 }, startVelocity: 18, gravity: 0.75, scalar: 1 });
-        confetti({ particleCount: 3, angle: 120, spread: 65, origin: { x: 1 }, startVelocity: 18, gravity: 0.75, scalar: 1 });
+        confetti({ particleCount: 3, angle:  60, spread: 65, origin: { x: 0 }, startVelocity: 18, gravity: 0.75 });
+        confetti({ particleCount: 3, angle: 120, spread: 65, origin: { x: 1 }, startVelocity: 18, gravity: 0.75 });
         if (Date.now() < end) requestAnimationFrame(frame);
     })();
 }
@@ -238,9 +358,8 @@ function clearInput() { manualInput = ""; render(); }
 
 function applyManualTotal() {
     const newTotal = Number(manualInput) || 0;
-    const delta    = newTotal - total;
-    total = newTotal;
-    manualInput = "";
+    const delta = newTotal - total;
+    total = newTotal; manualInput = "";
     rebuildBoxes();
     if (delta !== 0) recordTodayPages(delta);
     render();
@@ -251,56 +370,67 @@ function applyManualTotal() {
    ============================================= */
 
 let stopwatchSeconds  = 0;
-let stopwatchInterval = null;
 let stopwatchRunning  = false;
 let totalStudySeconds = Number(localStorage.getItem("totalStudySeconds")) || 0;
-let timerSeconds  = 1500;
-let timerInterval = null;
-let timerRunning  = false;
+let timerSeconds      = 1500;
+let timerRunning      = false;
 
-function formatTime(sec) {
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    const s = sec % 60;
-    if (h > 0) return pad(h) + ":" + pad(m) + ":" + pad(s);
-    return pad(m) + ":" + pad(s);
-}
 function pad(n) { return String(n).padStart(2, "0"); }
 
+function formatTime(sec) {
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
 function updateStopwatch() { document.getElementById("stopwatch").innerText = formatTime(stopwatchSeconds); }
-
-function toggleStopwatch() {
-    if (stopwatchRunning) {
-        clearInterval(stopwatchInterval);
-        stopwatchRunning = false;
-    } else {
-        stopwatchRunning = true;
-        stopwatchInterval = setInterval(() => {
-            stopwatchSeconds++;
-            totalStudySeconds++;
-            recordTodaySeconds(1);
-            updateStopwatch();
-            updateTotalTime();
-            updateSpeed();
-        }, 1000);
-    }
-}
-
-function resetStopwatch() {
-    clearInterval(stopwatchInterval);
-    stopwatchRunning  = false;
-    stopwatchSeconds  = 0;
-    updateStopwatch();
-}
+function updateTimer()     { document.getElementById("timerDisplay").innerText = formatTime(timerSeconds); }
 
 function updateTotalTime() {
     document.getElementById("totalTime").innerText = formatTime(totalStudySeconds);
     localStorage.setItem("totalStudySeconds", totalStudySeconds);
 }
 
-function resetTotalTime() { totalStudySeconds = 0; updateTotalTime(); updateSpeed(); }
+/* ---- Cronometro ---- */
+function toggleStopwatch() {
+    if (stopwatchRunning) {
+        stopwatchRunning = false;
+        if (IS_NATIVE) { TimerNative.stop(); }
+        else           { workerSend('sw-stop'); releaseWakeLock(); }
+    } else {
+        stopwatchRunning = true;
+        if (IS_NATIVE) { TimerNative.startStopwatch({ seconds: stopwatchSeconds }); }
+        else           { workerSend('sw-start', stopwatchSeconds); acquireWakeLock(); }
+    }
+}
 
-function updateTimer() { document.getElementById("timerDisplay").innerText = formatTime(timerSeconds); }
+function resetStopwatch() {
+    stopwatchRunning = false;
+    stopwatchSeconds = 0;
+    if (IS_NATIVE) { TimerNative.stop(); }
+    else           { workerSend('sw-reset'); releaseWakeLock(); }
+    updateStopwatch();
+}
+
+/* ---- Timer ---- */
+function toggleTimer() {
+    if (timerRunning) {
+        timerRunning = false;
+        if (IS_NATIVE) { TimerNative.stop(); }
+        else           { workerSend('timer-stop'); releaseWakeLock(); }
+    } else {
+        timerRunning = true;
+        if (IS_NATIVE) { TimerNative.startTimer({ seconds: timerSeconds }); }
+        else           { workerSend('timer-start', timerSeconds); acquireWakeLock(); }
+    }
+}
+
+function resetTimer() {
+    timerRunning = false;
+    timerSeconds = (Number(document.getElementById("studyMinutes").value) || 25) * 60;
+    if (IS_NATIVE) { TimerNative.stop(); }
+    else           { workerSend('timer-reset', timerSeconds); releaseWakeLock(); }
+    updateTimer();
+}
 
 function changeStudy(amount) {
     const inp = document.getElementById("studyMinutes");
@@ -309,236 +439,141 @@ function changeStudy(amount) {
     if (!timerRunning) { timerSeconds = val * 60; updateTimer(); }
 }
 
-/* Timer: unico tasto Start/Stop */
-function toggleTimer() {
-    if (timerRunning) {
-        pauseTimer();
-    } else {
-        startTimer();
-    }
-}
-
-function startTimer() {
-    if (timerRunning) return;
-    timerRunning = true;
-    timerInterval = setInterval(() => {
-        timerSeconds--;
-        totalStudySeconds++;
-        recordTodaySeconds(1);
-        updateTimer();
-        updateTotalTime();
-        updateSpeed();
-        if (timerSeconds <= 0) {
-            clearInterval(timerInterval);
-            timerRunning = false;
-            alert("Tempo finito!");
-        }
-    }, 1000);
-}
-
-function pauseTimer() { clearInterval(timerInterval); timerRunning = false; }
-
-function resetTimer() {
-    clearInterval(timerInterval);
-    timerRunning  = false;
-    timerSeconds  = (Number(document.getElementById("studyMinutes").value) || 25) * 60;
-    updateTimer();
-}
-
 function changeTotalTime(amount) {
     totalStudySeconds = Math.max(0, totalStudySeconds + amount);
-    updateTotalTime();
-    updateSpeed();
+    updateTotalTime(); updateSpeed();
 }
+
+function resetTotalTime() { totalStudySeconds = 0; updateTotalTime(); updateSpeed(); }
 
 /* =============================================
    STATISTICHE
    ============================================= */
 
-const IT_DAYS   = ['Dom','Lun','Mar','Mer','Gio','Ven','Sab'];
-const IT_MON_S  = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic'];
-const IT_MON_F  = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno','Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre'];
+const IT_DAYS  = ['Dom','Lun','Mar','Mer','Gio','Ven','Sab'];
+const IT_MON_S = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic'];
+const IT_MON_F = ['Gennaio','Febbraio','Marzo','Aprile','Maggio','Giugno',
+                  'Luglio','Agosto','Settembre','Ottobre','Novembre','Dicembre'];
 
-let statsMode      = "week";
-let statsOffset    = 0;
-let editOpen       = false;
-let pagesChartInst = null;
-let timeChartInst  = null;
+let statsMode = "week", statsOffset = 0, editOpen = false;
+let pagesChartInst = null, timeChartInst = null;
 
 function openStats() {
     document.getElementById("statsOverlay").classList.remove("stat-overlay--hidden");
-    statsOffset = 0;
-    refreshStats();
+    statsOffset = 0; refreshStats();
 }
-
 function closeStats() {
     document.getElementById("statsOverlay").classList.add("stat-overlay--hidden");
 }
-
 function setStatsMode(mode) {
-    statsMode   = mode;
-    statsOffset = 0;
-    document.querySelectorAll(".period-tab").forEach(b =>
-        b.classList.toggle("period-tab--active", b.dataset.mode === mode));
+    statsMode = mode; statsOffset = 0;
+    document.querySelectorAll(".period-tab")
+        .forEach(b => b.classList.toggle("period-tab--active", b.dataset.mode === mode));
     refreshStats();
 }
-
 function changeStatsPeriod(dir) {
-    if (dir > 0 && statsOffset >= 0) return;   // non nel futuro
-    statsOffset += dir;
-    refreshStats();
+    if (dir > 0 && statsOffset >= 0) return;
+    statsOffset += dir; refreshStats();
 }
 
 function getPeriodInfo() {
     const allData = getAllDailyData();
-    const today   = new Date();
-    today.setHours(0, 0, 0, 0);
-
+    const today   = new Date(); today.setHours(0,0,0,0);
     let labels = [], pages = [], timeHours = [], days = [], label = "";
 
     if (statsMode === "week") {
-        const dow    = today.getDay();
+        const dow = today.getDay();
         const monday = new Date(today);
         monday.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1) + statsOffset * 7);
-
         for (let i = 0; i < 7; i++) {
-            const d   = new Date(monday);
-            d.setDate(monday.getDate() + i);
-            const key   = d.toISOString().slice(0, 10);
-            const entry = allData[key] || { pages: 0, seconds: 0 };
+            const d = new Date(monday); d.setDate(monday.getDate() + i);
+            const key = d.toISOString().slice(0,10);
+            const e   = allData[key] || { pages:0, seconds:0 };
             days.push(key);
             labels.push(IT_DAYS[d.getDay()] + " " + d.getDate());
-            pages.push(entry.pages || 0);
-            timeHours.push(+((entry.seconds || 0) / 3600).toFixed(2));
+            pages.push(e.pages || 0);
+            timeHours.push(+((e.seconds || 0) / 3600).toFixed(2));
         }
-
-        const endDate = new Date(monday);
-        endDate.setDate(monday.getDate() + 6);
+        const endDate = new Date(monday); endDate.setDate(monday.getDate() + 6);
         label = monday.getDate() + " " + IT_MON_S[monday.getMonth()]
               + " – " + endDate.getDate() + " " + IT_MON_S[endDate.getMonth()]
               + " " + endDate.getFullYear();
 
     } else if (statsMode === "month") {
-        const ref        = new Date(today.getFullYear(), today.getMonth() + statsOffset, 1);
-        const daysInMon  = new Date(ref.getFullYear(), ref.getMonth() + 1, 0).getDate();
-
-        for (let i = 1; i <= daysInMon; i++) {
-            const d     = new Date(ref.getFullYear(), ref.getMonth(), i);
-            const key   = d.toISOString().slice(0, 10);
-            const entry = allData[key] || { pages: 0, seconds: 0 };
-            days.push(key);
-            labels.push(String(i));
-            pages.push(entry.pages || 0);
-            timeHours.push(+((entry.seconds || 0) / 3600).toFixed(2));
+        const ref = new Date(today.getFullYear(), today.getMonth() + statsOffset, 1);
+        const dim = new Date(ref.getFullYear(), ref.getMonth() + 1, 0).getDate();
+        for (let i = 1; i <= dim; i++) {
+            const d = new Date(ref.getFullYear(), ref.getMonth(), i);
+            const key = d.toISOString().slice(0,10);
+            const e   = allData[key] || { pages:0, seconds:0 };
+            days.push(key); labels.push(String(i));
+            pages.push(e.pages || 0);
+            timeHours.push(+((e.seconds || 0) / 3600).toFixed(2));
         }
         label = IT_MON_F[ref.getMonth()] + " " + ref.getFullYear();
 
     } else {
         const year = today.getFullYear() + statsOffset;
         for (let m = 0; m < 12; m++) {
-            const dim   = new Date(year, m + 1, 0).getDate();
-            let mPg = 0, mSec = 0;
-            const mDays = [];
-            for (let i = 1; i <= dim; i++) {
-                const d   = new Date(year, m, i);
-                const key = d.toISOString().slice(0, 10);
+            const dim = new Date(year, m+1, 0).getDate();
+            let mPg=0, mSec=0; const mDays=[];
+            for (let i=1; i<=dim; i++) {
+                const d = new Date(year,m,i), key = d.toISOString().slice(0,10);
                 mDays.push(key);
-                const e   = allData[key] || { pages: 0, seconds: 0 };
-                mPg  += e.pages   || 0;
-                mSec += e.seconds || 0;
+                const e = allData[key] || {pages:0,seconds:0};
+                mPg += e.pages||0; mSec += e.seconds||0;
             }
-            days.push(mDays);
-            labels.push(IT_MON_S[m]);
-            pages.push(mPg);
-            timeHours.push(+(mSec / 3600).toFixed(2));
+            days.push(mDays); labels.push(IT_MON_S[m]);
+            pages.push(mPg); timeHours.push(+(mSec/3600).toFixed(2));
         }
         label = String(year);
     }
 
-    const totalPages = pages.reduce((a, b) => a + b, 0);
+    const totalPages = pages.reduce((a,b)=>a+b, 0);
     const totalSeconds = statsMode === "year"
-        ? days.flat().reduce((s, k) => s + ((allData[k] || {}).seconds || 0), 0)
-        : days.reduce((s, k) => s + ((allData[k] || {}).seconds || 0), 0);
+        ? days.flat().reduce((s,k) => s + ((allData[k]||{}).seconds||0), 0)
+        : days.reduce((s,k) => s + ((allData[k]||{}).seconds||0), 0);
 
     return { labels, pages, timeHours, days, label, totalPages, totalSeconds };
 }
 
 function formatHours(sec) {
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    return h + "h " + pad(m) + "m";
+    return Math.floor(sec/3600) + "h " + pad(Math.floor((sec%3600)/60)) + "m";
 }
 
 function refreshStats() {
     const info = getPeriodInfo();
-    document.getElementById("periodLabel").textContent    = info.label;
+    document.getElementById("periodLabel").textContent     = info.label;
     document.getElementById("statsTotalPages").textContent = info.totalPages;
     document.getElementById("statsTotalHours").textContent = formatHours(info.totalSeconds);
     renderCharts(info);
     if (editOpen) renderEditTable(info);
 }
 
-const PINK_BG     = "rgba(255,182,212,0.78)";
-const PINK_BORDER = "#e8749b";
-
+const PINK_BG = "rgba(255,182,212,0.78)", PINK_BORDER = "#e8749b";
 const BASE_SCALE = {
-    x: {
-        ticks: { color: "#5c2c16", font: { size: 10 }, maxRotation: 45 },
-        grid:  { color: "rgba(255,214,231,0.4)" }
-    },
-    y: {
-        beginAtZero: true,
-        ticks: { color: "#5c2c16", font: { size: 10 } },
-        grid:  { color: "rgba(255,214,231,0.5)" }
-    }
+    x: { ticks:{color:"#5c2c16",font:{size:10},maxRotation:45}, grid:{color:"rgba(255,214,231,0.4)"} },
+    y: { beginAtZero:true, ticks:{color:"#5c2c16",font:{size:10}}, grid:{color:"rgba(255,214,231,0.5)"} }
 };
 
 function barDataset(data) {
-    return {
-        data,
-        backgroundColor: PINK_BG,
-        borderColor:     PINK_BORDER,
-        borderWidth: 1.5,
-        borderRadius: 6,
-        borderSkipped: false
-    };
+    return { data, backgroundColor:PINK_BG, borderColor:PINK_BORDER,
+             borderWidth:1.5, borderRadius:6, borderSkipped:false };
 }
 
 function renderCharts(info) {
-    if (pagesChartInst) { pagesChartInst.destroy(); pagesChartInst = null; }
-    if (timeChartInst)  { timeChartInst.destroy();  timeChartInst  = null; }
-
+    if (pagesChartInst) { pagesChartInst.destroy(); pagesChartInst=null; }
+    if (timeChartInst)  { timeChartInst.destroy();  timeChartInst=null;  }
     pagesChartInst = new Chart(document.getElementById("pagesChart"), {
-        type: "bar",
-        data: { labels: info.labels, datasets: [barDataset(info.pages)] },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: BASE_SCALE
-        }
+        type:"bar", data:{labels:info.labels, datasets:[barDataset(info.pages)]},
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:BASE_SCALE}
     });
-
     timeChartInst = new Chart(document.getElementById("timeChart"), {
-        type: "bar",
-        data: { labels: info.labels, datasets: [barDataset(info.timeHours)] },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: {
-                x: BASE_SCALE.x,
-                y: {
-                    beginAtZero: true,
-                    ticks: {
-                        color: "#5c2c16",
-                        font: { size: 10 },
-                        callback: v => v + "h"
-                    },
-                    grid: BASE_SCALE.y.grid
-                }
-            }
-        }
+        type:"bar", data:{labels:info.labels, datasets:[barDataset(info.timeHours)]},
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+            scales:{x:BASE_SCALE.x, y:{beginAtZero:true,
+                ticks:{color:"#5c2c16",font:{size:10},callback:v=>v+"h"},
+                grid:BASE_SCALE.y.grid}}}
     });
 }
 
@@ -549,33 +584,26 @@ function toggleEdit() {
 }
 
 function renderEditTable(info) {
-    const area    = document.getElementById("editArea");
-    const allData = getAllDailyData();
+    const area = document.getElementById("editArea"), allData = getAllDailyData();
     let rows = [];
-
     if (statsMode === "year") {
-        info.days.forEach(monthDays =>
-            monthDays.forEach(key => {
-                const e = allData[key];
-                if (e && (e.pages > 0 || e.seconds > 0))
-                    rows.push({ key, label: key, pages: e.pages || 0, minutes: Math.round((e.seconds || 0) / 60) });
-            })
-        );
+        info.days.forEach(md => md.forEach(key => {
+            const e = allData[key];
+            if (e && (e.pages>0||e.seconds>0))
+                rows.push({key,label:key,pages:e.pages||0,minutes:Math.round((e.seconds||0)/60)});
+        }));
     } else {
-        info.days.forEach((key, i) => {
-            const e = allData[key] || { pages: 0, seconds: 0 };
-            rows.push({ key, label: info.labels[i], pages: e.pages || 0, minutes: Math.round((e.seconds || 0) / 60) });
+        info.days.forEach((key,i) => {
+            const e = allData[key]||{pages:0,seconds:0};
+            rows.push({key,label:info.labels[i],pages:e.pages||0,minutes:Math.round((e.seconds||0)/60)});
         });
     }
-
-    if (rows.length === 0) {
-        area.innerHTML = '<p class="edit-empty">Nessun dato registrato per questo periodo.</p>';
-        return;
+    if (!rows.length) {
+        area.innerHTML='<p class="edit-empty">Nessun dato registrato per questo periodo.</p>'; return;
     }
-
     area.innerHTML = `<table class="edit-table">
         <thead><tr><th>Data</th><th>Pagine</th><th>Minuti studiati</th><th></th></tr></thead>
-        <tbody>${rows.map(r => `<tr>
+        <tbody>${rows.map(r=>`<tr>
             <td>${r.label}</td>
             <td><input class="edit-input" type="number" id="ep-${r.key}" value="${r.pages}" min="0"></td>
             <td><input class="edit-input" type="number" id="em-${r.key}" value="${r.minutes}" min="0"></td>
@@ -584,19 +612,20 @@ function renderEditTable(info) {
 }
 
 function saveEditRow(key) {
-    const pages   = Math.max(0, Number(document.getElementById("ep-" + key)?.value) || 0);
-    const seconds = Math.max(0, (Number(document.getElementById("em-" + key)?.value) || 0) * 60);
-    const allData = getAllDailyData();
-    allData[key] = { pages, seconds };
-    saveDailyData(allData);
-    refreshStats();
+    const pages   = Math.max(0, Number(document.getElementById("ep-"+key)?.value)||0);
+    const seconds = Math.max(0, (Number(document.getElementById("em-"+key)?.value)||0)*60);
+    const allData = getAllDailyData(); allData[key]={pages,seconds};
+    saveDailyData(allData); refreshStats();
     const btn = document.querySelector(`[onclick="saveEditRow('${key}')"]`);
-    if (btn) { btn.textContent = "✓"; setTimeout(() => btn.textContent = "Salva", 1400); }
+    if (btn) { btn.textContent="✓"; setTimeout(()=>btn.textContent="Salva",1400); }
 }
 
 /* =============================================
    INIT
    ============================================= */
+
+initWorker();
+setupNativeListener();
 
 rebuildBoxes();
 render();
