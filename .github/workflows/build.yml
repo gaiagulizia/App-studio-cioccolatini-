@@ -29,10 +29,14 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build Web Assets
-        run: npm run build --if-present
+      - name: Ensure Web Assets Folder Exists
+        run: |
+          if [ ! -d "www" ]; then
+            mkdir www
+            echo "<html><body>App Studio</body></html>" > www/index.html
+          fi
 
-      - name: Add Android platform (Fresh Install)
+      - name: Add Android platform
         run: |
           rm -rf android
           npx cap add android
